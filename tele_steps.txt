@@ -1,0 +1,64 @@
+📱 TELEGRAM BOT SETUP GUIDE
+
+Follow these steps to create your Telegram Bot and get Chat ID:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 STEP 1: Create Bot using BotFather
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Open Telegram app
+2. Search for: @BotFather
+3. Start the chat
+4. Type:
+/start
+
+5. Then type:
+/newbot
+
+6. Enter a name for your bot (e.g. ResumeAI Bot)
+
+7. Enter a username (must end with 'bot')
+   Example: resume_ai_helper_bot
+
+8. BotFather will give you:
+👉 TELEGRAM BOT TOKEN
+
+Example:
+123456789:AAEXAMPLE_TOKEN
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🆔 STEP 2: Get Chat ID
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+METHOD 1 (EASIEST):
+
+1. Open Telegram
+2. Search your bot username
+3. Start the bot → click "Start"
+
+4. Open this URL in browser:
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+
+5. You will see JSON response
+
+6. Find:
+"chat": {
+    "id": 123456789
+}
+
+👉 This number is your CHAT ID
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ IMPORTANT NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• You MUST start the bot before getting Chat ID  
+• Keep your bot token secret  
+• Do not share publicly  
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ FINAL VALUES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TELEGRAM_BOT_TOKEN = your bot token  
+TELEGRAM_CHAT_ID   = your chat id  
