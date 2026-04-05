@@ -95,6 +95,273 @@ def parse_resume_file(uploaded_file) -> str:
     return "[Unsupported file format. Use PDF, DOCX, or TXT]"
 
 
+#Parsing resume through llm
+def build_resume_parser_prompt(text):
+    return f"""
+You are an advanced ATS resume parser.
+
+Extract structured information from the resume below.
+
+Return ONLY valid JSON. No explanation, no markdown.
+
+Format:
+{{
+  "name": "",
+  "email": "",
+  "phone": "",
+  "linkedin_url": "",
+  "github_url": "",
+  "address": "",
+  "profile_summary": "",
+  "skills": {{
+    "technical_skills": [],
+    "core_competencies": [],
+    "soft_skills": []
+  }},
+  "experience": "",
+  "projects": "",
+  "education": "",
+  "certifications": "",
+  "other": ""
+}}
+
+Rules:
+- Map different headings to standard fields:
+  - "Skills", "Technical Skills", "Expertise" → skills
+  - "Work Experience", "Professional Experience" → experience
+  - "Profile", "Summary" → profile_summary
+- Extract exact content, do not rewrite
+- Skills MUST be arrays (lists)
+- Do NOT hallucinate missing data
+- If not found, return empty string "" or empty list []
+- Keep original wording and formatting
+
+Resume:
+{text}
+"""
+
+
+def parse_resume_with_llm(text):
+    prompt = build_resume_parser_prompt(text)
+    client = Groq(api_key=GROQ_KEY)
+    response = client.chat.completions.create(
+        model=MAIN_MODEL,  # or your model
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+    except:
+        return {"error": "Invalid JSON", "raw": content}
+    
+# 🔹 Clean text
+def clean_text(text):
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\x00-\x7F]+', ' ', text)
+    return text.strip()
+
+def safe_json_load(content):
+    try:
+        return json.loads(content)
+    except:
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+    return {"error": "Parsing failed", "raw": content}
+
+#for optimisation
+def optimize_resume(original_resume_text: str, job_text: str, changes_needed: dict, user_instructions: str = "") -> dict:
+    """Generate optimized resume using the changes_needed from ATS analysis."""
+    
+    changes_json = json.dumps(changes_needed, indent=2)
+    
+    prompt = f"""You are an expert resume optimizer. Using the original resume and the specific changes needed from ATS analysis, create an optimized resume in the required JSON format.
+
+**Original Resume:**
+{original_resume_text[:3000]}
+
+**Job Description:**
+{job_text[:2000]}
+
+**Changes Needed (from ATS Analysis):**
+{changes_json}
+
+**User Instructions:**
+{user_instructions if user_instructions else "Apply the changes needed and optimize for better ATS score"}
+
+**REQUIRED OUTPUT FORMAT (MUST BE VALID JSON):**
+{{
+  "name": "Full name from original resume",
+  "email": "email@example.com",
+  "phone": "+1234567890",
+  "linkedin_url": "linkedin.com/in/username",
+  "github_url": "github.com/username",
+  "address": "City, State/Country",
+  "profile_summary": "{changes_needed.get('profile_summary', 'Optimized professional summary')}",
+  "skills": {{
+    "technical_skills": {changes_needed.get('skills', {}).get('technical_skills', [])},
+    "core_competencies": {changes_needed.get('skills', {}).get('core_competencies', [])},
+    "soft_skills": {changes_needed.get('skills', {}).get('soft_skills', [])}
+  }},
+  "experience": "{changes_needed.get('experience', 'Optimized experience section with achievements')}",
+  "projects": "{changes_needed.get('projects', 'Optimized projects with impact')}",
+  "education": "Extract and optimize from original resume",
+  "certifications": "Extract and optimize from original resume",
+  "other": "{changes_needed.get('other', 'Additional optimized information')}"
+}}
+
+**IMPORTANT RULES:**
+1. Use the changes_needed as the PRIMARY source for improvements
+2. Preserve personal info (name, email, phone, etc.) from original resume
+3. If changes_needed has content for a section, USE IT
+4. If changes_needed is missing a section, extract and optimize from original resume
+5. Add quantifiable achievements wherever possible
+6. Keep formatting clean with markdown (**bold** for titles, • for bullets)
+7. Return ONLY valid JSON, no other text
+
+Generate the optimized resume now:"""
+
+    try:
+        response = groq_chat(prompt, "You are an expert resume optimizer. Return ONLY valid JSON.")
+        
+        # Clean response
+        response = response.strip()
+        if response.startswith('```json'):
+            response = response[7:]
+        if response.startswith('```'):
+            response = response[3:]
+        if response.endswith('```'):
+            response = response[:-3]
+        response = response.strip()
+        
+        # Parse JSON
+        optimized_json = json.loads(response)
+        
+        # Ensure all required fields exist
+        required_fields = {
+            "name": "", "email": "", "phone": "", "linkedin_url": "", 
+            "github_url": "", "address": "", "profile_summary": "",
+            "skills": {"technical_skills": [], "core_competencies": [], "soft_skills": []},
+            "experience": "", "projects": "", "education": "", 
+            "certifications": "", "other": ""
+        }
+        
+        for key, default_value in required_fields.items():
+            if key not in optimized_json:
+                optimized_json[key] = default_value
+        
+        return optimized_json
+        
+    except Exception as e:
+        # Fallback: create basic structure from changes_needed
+        return {
+            "name": "",
+            "email": "",
+            "phone": "",
+            "linkedin_url": "",
+            "github_url": "",
+            "address": "",
+            "profile_summary": changes_needed.get("profile_summary", ""),
+            "skills": changes_needed.get("skills", {"technical_skills": [], "core_competencies": [], "soft_skills": []}),
+            "experience": changes_needed.get("experience", ""),
+            "projects": changes_needed.get("projects", ""),
+            "education": "",
+            "certifications": "",
+            "other": changes_needed.get("other", "")
+        }
+
+
+def generate_text_from_structured(structured_data: dict) -> str:
+    """Convert structured JSON resume to plain text format."""
+    
+    text_parts = []
+    
+    # Header
+    if structured_data.get("name"):
+        text_parts.append(structured_data["name"])
+        text_parts.append("=" * len(structured_data["name"]))
+        text_parts.append("")
+    
+    # Contact info
+    contact = []
+    if structured_data.get("email"):
+        contact.append(structured_data["email"])
+    if structured_data.get("phone"):
+        contact.append(structured_data["phone"])
+    if structured_data.get("linkedin_url"):
+        contact.append(structured_data["linkedin_url"])
+    if structured_data.get("github_url"):
+        contact.append(structured_data["github_url"])
+    if structured_data.get("address"):
+        contact.append(structured_data["address"])
+    
+    if contact:
+        text_parts.append(" | ".join(contact))
+        text_parts.append("")
+    
+    # Profile Summary
+    if structured_data.get("profile_summary"):
+        text_parts.append("PROFESSIONAL SUMMARY")
+        text_parts.append("-" * 20)
+        text_parts.append(structured_data["profile_summary"])
+        text_parts.append("")
+    
+    # Skills
+    skills = structured_data.get("skills", {})
+    if skills:
+        text_parts.append("SKILLS")
+        text_parts.append("-" * 10)
+        
+        if skills.get("technical_skills"):
+            text_parts.append(f"Technical: {', '.join(skills['technical_skills'])}")
+        if skills.get("core_competencies"):
+            text_parts.append(f"Core: {', '.join(skills['core_competencies'])}")
+        if skills.get("soft_skills"):
+            text_parts.append(f"Soft: {', '.join(skills['soft_skills'])}")
+        text_parts.append("")
+    
+    # Experience
+    if structured_data.get("experience"):
+        text_parts.append("WORK EXPERIENCE")
+        text_parts.append("-" * 15)
+        text_parts.append(structured_data["experience"])
+        text_parts.append("")
+    
+    # Projects
+    if structured_data.get("projects"):
+        text_parts.append("PROJECTS")
+        text_parts.append("-" * 10)
+        text_parts.append(structured_data["projects"])
+        text_parts.append("")
+    
+    # Education
+    if structured_data.get("education"):
+        text_parts.append("EDUCATION")
+        text_parts.append("-" * 10)
+        text_parts.append(structured_data["education"])
+        text_parts.append("")
+    
+    # Certifications
+    if structured_data.get("certifications"):
+        text_parts.append("CERTIFICATIONS")
+        text_parts.append("-" * 15)
+        text_parts.append(structured_data["certifications"])
+        text_parts.append("")
+    
+    # Other
+    if structured_data.get("other"):
+        text_parts.append("ADDITIONAL INFORMATION")
+        text_parts.append("-" * 20)
+        text_parts.append(structured_data["other"])
+    
+    return "\n".join(text_parts)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Core LLM helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,6 +408,39 @@ def groq_vision(image_bytes: bytes, prompt: str) -> str:
         return resp.choices[0].message.content.strip()
     except Exception as e:
         return f"[Vision error: {e}]"
+
+def groq_vision_multiple(image_bytes_1: bytes, image_bytes_2: bytes, prompt: str) -> str:
+    """Send two images to Groq Vision model for comparison."""
+    
+    # Encode both images
+    base64_image_1 = base64.b64encode(image_bytes_1).decode('utf-8')
+    base64_image_2 = base64.b64encode(image_bytes_2).decode('utf-8')
+    
+    client = Groq(api_key=GROQ_KEY)
+    
+    completion = client.chat.completions.create(
+        model=VISION_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image_1}"}
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image_2}"}
+                    }
+                ]
+            }
+        ],
+        temperature=0.7,
+        max_tokens=2000
+    )
+    
+    return completion.choices[0].message.content
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -265,7 +565,17 @@ Return this exact JSON structure:
     "education": <0-100>,
     "format": <0-100>
   }},
-  "optimized_summary": "<rewritten summary section>"
+  "changes_needed": {{
+    "profile_summary": "Current summary is too generic. Add: 'Machine Learning Engineer with 5+ years experience in Python and AWS. Improved model accuracy by 25% and reduced costs by 30%.'",
+    "skills": {{
+      "technical_skills": ["Python", "AWS", "Docker", "Kubernetes", "TensorFlow"],
+      "core_competencies": ["Machine Learning", "Data Analysis", "Cloud Architecture"],
+      "soft_skills": ["Leadership", "Problem Solving", "Communication"]
+    }},
+    "experience": "**Senior ML Engineer | Tech Corp** (2022-Present)\\n• Developed ML models improving accuracy by 25%\\n• Reduced infrastructure costs by 30% using AWS optimization\\n• Led team of 3 junior engineers\\n\\n**ML Engineer | DataFirm** (2019-2022)\\n• Built recommendation engine increasing engagement by 40%\\n• Implemented CI/CD pipeline reducing deployment time by 50%",
+    "projects": "**E-commerce Recommendation System**\\n• Built using Python and TensorFlow\\n• Increased sales by 25%\\n\\n**Cloud Cost Optimizer**\\n• AWS Lambda and CloudWatch integration\\n• Saved $50K annually",
+    "other": "Certifications: AWS Certified Solutions Architect\\nLanguages: English (Fluent), Spanish (Intermediate)"
+  }}
 }}"""
 
     raw = groq_chat(
@@ -285,7 +595,7 @@ Return this exact JSON structure:
             "gaps": [],
             "recommendations": ["Please verify your API key and try again"],
             "section_scores": {"summary": 0, "experience": 0, "skills": 0, "education": 0, "format": 0},
-            "optimized_summary": "",
+            "changes_needed": "",
         }
 
 
@@ -293,18 +603,18 @@ Return this exact JSON structure:
 # Resume Optimization
 # ─────────────────────────────────────────────────────────────────────────────
 
-def optimize_resume(resume_text: str, job_text: str, instructions: str = "") -> str:
-    """Optimize resume text for the given job using Groq LLM."""
-    extra = f"\nAdditional instructions: {instructions}" if instructions else ""
-    return groq_chat(
-        f"Optimize this resume for the job.{extra}\n\n"
-        f"RESUME:\n{resume_text[:3500]}\n\n"
-        f"JOB DESCRIPTION:\n{job_text[:2000]}",
-        "You are an expert resume writer. Rewrite the resume with: strong action verbs, "
-        "quantified achievements, relevant keywords from the job, clean markdown formatting. "
-        "Keep all facts accurate — never fabricate experience.",
-        max_tokens=4096,
-    )
+# def optimize_resume(resume_text: str, job_text: str, instructions: str = "") -> str:
+#     """Optimize resume text for the given job using Groq LLM."""
+#     extra = f"\nAdditional instructions: {instructions}" if instructions else ""
+#     return groq_chat(
+#         f"Optimize this resume for the job.{extra}\n\n"
+#         f"RESUME:\n{resume_text[:3500]}\n\n"
+#         f"JOB DESCRIPTION:\n{job_text[:2000]}",
+#         "You are an expert resume writer. Rewrite the resume with: strong action verbs, "
+#         "quantified achievements, relevant keywords from the job, clean markdown formatting. "
+#         "Keep all facts accurate — never fabricate experience.",
+#         max_tokens=4096,
+#     )
 
 
 def generate_new_resume(resume_text: str, job_text: str, template_text: str) -> str:
@@ -347,33 +657,19 @@ def improve_linkedin(resume_text: str, job_text: str = "") -> str:
     )
 
 
-def analyze_vision(image_bytes: bytes) -> str:
-    """Analyze resume image using Groq Vision model."""
-    return groq_vision(
-        image_bytes,
-        "Analyze this resume image in detail:\n"
-        "1. Rate visual clarity (1-10)\n"
-        "2. Identify all sections present\n"
-        "3. Rate ATS-friendliness (1-10) and explain\n"
-        "4. List 3 layout strengths\n"
-        "5. List 3 specific improvements\n"
-        "6. Assess font, spacing, and structure\n"
-        "Be specific and actionable.",
-    )
+def analyze_vision(image_bytes: bytes, user_prompt: str) -> str:
+    """Analyze resume image using Groq Vision model with user prompt."""
+    return groq_vision(image_bytes, user_prompt)
 
 
-def compare_resumes_vision(image_bytes_1: bytes, image_bytes_2: bytes) -> tuple[str, str]:
-    """Compare two resume images with vision model."""
-    prompt = (
-        "Evaluate this resume comprehensively:\n"
-        "Rate design, clarity, and ATS-friendliness (1-10 each).\n"
-        "List 3 strengths and 3 weaknesses.\n"
-        "Give a hiring manager's impression."
-    )
-    r1 = groq_vision(image_bytes_1, prompt)
-    r2 = groq_vision(image_bytes_2, prompt)
-    return r1, r2
+def compare_resumes_vision(image_bytes_1: bytes, image_bytes_2: bytes, user_prompt: str) -> str:
+    """Compare two resume images with user prompt and return combined result."""
+    prompt = f"""Compare these two resumes based on the user's request: {user_prompt}
 
+    Please analyze both resumes and provide a clear comparison following the user's instructions."""
+    
+    # Send both images for comparison
+    return groq_vision_multiple(image_bytes_1, image_bytes_2, prompt)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Formatting helpers (Telegram / Email messages)

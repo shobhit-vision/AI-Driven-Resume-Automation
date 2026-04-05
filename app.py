@@ -1,16 +1,3 @@
-"""
-app.py — ResumeAI Pro v2.2 (FIXED & IMPROVED)
-AI-Driven Resume Automation Platform
-LangChain Agents · Groq LLM · MongoDB · Telegram · Vision AI · Voice Commands
-
-FIXES IN v2.2:
-✓ Job selection now properly loads job_text (was missing before)
-✓ Added job comparison feature
-✓ Fixed "No job loaded" error in ATS page
-✓ Improved job state management
-✓ Better job details display
-✓ Job comparison with side-by-side view
-"""
 
 import streamlit as st
 from datetime import datetime
@@ -37,7 +24,7 @@ from settings import (
 )
 
 from resume import (
-    parse_resume_file, groq_chat, groq_vision,
+    parse_resume_file,parse_resume_with_llm,clean_text, groq_chat, groq_vision,
     compute_ats, optimize_resume, generate_new_resume,
     generate_cover_letter, improve_linkedin,
     analyze_vision, compare_resumes_vision,
@@ -46,15 +33,6 @@ from resume import (
 from jobs import (
     extract_job_from_url, extract_job_from_text, extract_job_from_file,
     extract_job_details,
-)
-from telegram_bot import (
-    send_message as tg_send,
-    send_ats_report as tg_ats,
-    send_job_details as tg_job,
-    send_document as tg_doc,
-    test_connection as tg_test,
-    set_webhook, delete_webhook, get_updates,
-    process_bot_command, TelegramPoller,
 )
 
 # ─── Optional library flags ───────────────────────────────────────────────────
@@ -653,6 +631,16 @@ footer {
   }
 }
 
+/* Hide entire header */
+[data-testid="stHeader"] {
+    display: none;
+}
+
+/* Optional: remove top padding gap */
+.block-container {
+    padding-top: 1rem;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -674,11 +662,9 @@ DEFAULTS = {
     "ats_result": None,
     "optimized_resume": "",
     "notifications": [],
-    "tg_messages": [],
     "template_text": "",
     "chat_history": [],
     "voice_input": "",
-    "tg_poller_active": False,
     "sidebar_state": "expanded",
 }
 
@@ -721,12 +707,56 @@ class DB:
                 return None
         return cls._db
 
+
     @classmethod
-    def save_resume(cls, name, text, meta=None):
+    def upsert_resume(cls, name, text, structured=None, meta=None):
         db = cls.get()
-        if db is None: return None
-        doc = {"name": name, "text": text, "meta": meta or {}, "created_at": datetime.utcnow()}
-        return str(db["resumes"].insert_one(doc).inserted_id)
+        if db is None:
+            return None
+
+        query = {
+            "name": name,
+            "meta.filename": meta.get("filename") if meta else None
+        }
+
+        update = {
+            "$set": {
+                "text": text,
+                "structured": structured or {},
+                "meta": meta or {},
+                "updated_at": datetime.utcnow()
+            },
+            "$setOnInsert": {
+                "created_at": datetime.utcnow()
+            }
+        }
+
+        result = db["resumes"].update_one(query, update, upsert=True)
+
+        if result.upserted_id:
+            return str(result.upserted_id)
+
+        # If updated existing, fetch ID
+        existing = db["resumes"].find_one(query)
+        return str(existing["_id"]) if existing else None
+
+    @classmethod
+    def delete_resume(cls, resume_id):
+        db = cls.get()
+        if db is None:
+            return False
+
+        try:
+            obj_id = ObjectId(str(resume_id))  # 🔥 force string conversion
+
+            result = db["resumes"].delete_one({"_id": obj_id})
+
+            return result.deleted_count > 0
+
+        except Exception as e:
+            print("Delete error:", e)
+            return False
+    
 
     @classmethod
     def save_optimized_resume(cls, name, text, meta=None):
@@ -741,19 +771,24 @@ class DB:
         }
         return str(db["resumes"].insert_one(doc).inserted_id)
 
+
     @classmethod
-    @st.cache_data(ttl=300)
     def list_resumes(cls):
         db = cls.get()
-        if db is None: return []
+        if db is None:
+            return []
         return list(db["resumes"].find({}, {"text": 0}).sort("created_at", -1).limit(50))
-
+    
     @classmethod
     def get_resume(cls, rid):
         db = cls.get()
-        if db is None: return None
-        try: return db["resumes"].find_one({"_id": ObjectId(rid)})
-        except: return None
+        if db is None:
+            return None
+        try:
+            return db["resumes"].find_one({"_id": ObjectId(str(rid))})
+        except Exception as e:
+            print("Get error:", e)
+            return None
 
     @classmethod
     def save_job_limited(cls, title, text, details, source="manual", meta=None):
@@ -975,7 +1010,7 @@ def page_resume():
     st.markdown("### 🗄️ Your Resumes")
     
     resumes = DB.list_resumes()
-
+        
     if not resumes:
         st.markdown("""
         <div class="empty-state">
@@ -985,26 +1020,31 @@ def page_resume():
         </div>
         """, unsafe_allow_html=True)
     else:
+        resume_map = {str(r["_id"]): r for r in resumes}
         cols = st.columns(2)
         for idx, resume in enumerate(resumes):
             with cols[idx % 2]:
                 resume_id = str(resume["_id"])
                 created_date = str(resume.get("created_at", ""))[:10] if resume.get("created_at") else "Unknown"
-                
+                structured = resume.get("structured", {})
+                real_name = structured.get("name") if isinstance(structured, dict) else None
+                display_name = real_name if real_name else "Unnamed Candidate"
+                file_name = resume.get("name", "Unnamed File")
                 st.markdown(f"""
                 <div class="resume-card">
-                    <div class="resume-name">📄 {resume.get('name', 'Unnamed')}</div>
+                    <div class="resume-name">📄 {display_name}</div>
                     <div class="resume-meta">
                         📅 {created_date}<br>
-                        📝 {len(resume.get('text', '')):,} characters
+                    📁 {file_name}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 with col1:
                     if st.button("✅ Use", key=f"use_resume_{resume_id}", use_container_width=True):
-                        full = DB.get_resume(resume_id)
+                        full =  DB.get_resume(resume_id) 
+                        text = full.get("text", "")
                         if full:
                             st.session_state.resume_text = full["text"]
                             st.session_state.resume_name = full["name"]
@@ -1014,17 +1054,115 @@ def page_resume():
                 
                 with col2:
                     if st.button("👁️ Preview", key=f"preview_resume_{resume_id}", use_container_width=True):
-                        full = DB.get_resume(resume_id)
-                        if full:
-                            with st.expander(f"Preview: {full['name']}", expanded=True):
+                        st.session_state[f"show_preview_{resume_id}"] = True
+
+                # 🔥 SHOW PREVIEW PANEL
+                if st.session_state.get(f"show_preview_{resume_id}", False):
+
+                    full = resume_map.get(resume_id)
+
+                    if full:
+                        structured = full.get("structured", {})
+                        text = full.get("text", "")
+
+                        with st.container():
+                            # 🔝 HEADER WITH CLOSE BUTTON
+                            colA, colB = st.columns([8, 1])
+                            with colA:
+                                st.markdown(f"### 📄 {full['name']}")
+                            with colB:
+                                if st.button("❌", key=f"close_preview_{resume_id}"):
+                                    st.session_state[f"show_preview_{resume_id}"] = False
+                                    st.rerun()
+
+                            st.markdown("---")
+
+                            # 🔥 BEAUTIFUL SCROLLABLE BOX
+                            st.markdown("""
+                            <style>
+                            .resume-box {
+                                max-height: 400px;
+                                overflow-y: auto;
+                                padding: 15px;
+                                border-radius: 10px;
+                                background-color: #0e1117;
+                                border: 1px solid #333;
+                                font-size: 14px;
+                                line-height: 1.6;
+                            }
+                            .section-title {
+                                font-weight: 600;
+                                margin-top: 10px;
+                                color: #4CAF50;
+                            }
+                            </style>
+                            """, unsafe_allow_html=True)
+
+                            # 🔥 STRUCTURED VIEW (if exists)
+                            if structured and isinstance(structured, dict) and "error" not in structured:
+
+                                html = '<div class="resume-box">'
+
+                                def add_section(title, content):
+                                    if content:
+                                        return f'<div class="section-title">{title}</div><div>{content}</div>'
+                                    return ""
+
+                                html += add_section("👤 Name", structured.get("name"))
+                                html += add_section("📧 Email", structured.get("email"))
+                                html += add_section("📱 Phone", structured.get("phone"))
+                                html += add_section("📍 Address", structured.get("address"))
+                                html += add_section("🧾 Summary", structured.get("summary"))
+
+                                # 🔥 Skills (special handling)
+                                skills = structured.get("skills", {})
+                                if skills:
+                                    html += '<div class="section-title">🛠 Skills</div>'
+                                    for k, v in skills.items():
+                                        if v:
+                                            html += f"<div><b>{k.replace('_',' ').title()}:</b> {', '.join(v)}</div>"
+
+                                html += add_section("💼 Experience", structured.get("experience"))
+                                html += add_section("🚀 Projects", structured.get("projects"))
+                                html += add_section("🎓 Education", structured.get("education"))
+                                html += add_section("📜 Certifications", structured.get("certifications"))
+
+                                html += '</div>'
+
+                                st.markdown(html, unsafe_allow_html=True)
+
+                            else:
+                                # 📄 FALLBACK RAW TEXT
                                 st.markdown(f"""
-                                <div class="resume-preview">
-                                    {full['text'][:1200]}...
+                                <div class="resume-box">
+                                    {text[:2000]}...
                                 </div>
                                 """, unsafe_allow_html=True)
+
+                with col3:
+                    if st.button("🗑️ Delete", key=f"delete_resume_{resume_id}", use_container_width=True):
+                        st.session_state.pop(f"show_preview_{resume_id}", None)
+                        success = DB.delete_resume(resume_id)
+
+                        if success:
+                            st.success("🗑️ Resume deleted successfully")
+
+                            # 🔥 CLEAR CACHE (CRITICAL)
+                            st.cache_data.clear()
+
+                            # 🔥 CLEAR SESSION IF ACTIVE
+                            if st.session_state.get("resume_id") == resume_id:
+                                st.session_state.resume_text = ""
+                                st.session_state.resume_name = ""
+                                st.session_state.resume_id = None
+
+                            st.rerun()
+
+                        else:
+                            st.error("❌ Failed to delete resume")
                 st.divider()
 
-    if st.session_state.resume_text:
+    if st.session_state.get("resume_text") and st.session_state.get("resume_name"):
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, rgba(16,185,129,0.1) 0%, rgba(16,185,129,0.05) 100%); border-left: 4px solid var(--success); padding: 1rem; border-radius: 8px; margin: 1.5rem 0;">
             <strong>✅ Active Resume:</strong> {st.session_state.get('resume_name', 'Loaded Resume')}<br>
@@ -1041,15 +1179,45 @@ def page_resume():
         st.markdown("Supported: PDF, DOCX, TXT")
         
         uf = st.file_uploader("Choose file", type=["pdf","docx","txt"], label_visibility="collapsed")
-        
-        if uf:
+
+        # ✅ TRACK FILE STATE (CRITICAL FIX)
+        if "last_uploaded_file" not in st.session_state:
+            st.session_state.last_uploaded_file = None
+
+        # 🔥 FILE REMOVED → HARD RESET
+        if uf is None and st.session_state.last_uploaded_file is not None:
+            st.session_state.resume_text = ""
+            st.session_state.resume_name = ""
+            st.session_state.resume_id = None
+            st.session_state.pop("resume_structured", None)
+            st.session_state.last_uploaded_file = None
+            st.rerun()
+
+        # 🔥 NEW FILE UPLOADED → RESET OLD STRUCTURE
+        if uf is not None:
+            if st.session_state.last_uploaded_file != uf.name:
+                st.session_state.pop("resume_structured", None)
+            st.session_state.last_uploaded_file = uf.name
+
+        if uf and "parsed_text" not in st.session_state:
             with st.spinner("📄 Parsing document..."):
-                text = parse_resume_file(uf)
-            
-            if text and not text.startswith("[Error"):
+                raw_text = parse_resume_file(uf)
+
+            if raw_text and not raw_text.startswith("[Error"):
+                text = clean_text(raw_text)
+                st.session_state.parsed_text = text
                 st.session_state.resume_text = text
                 st.session_state.resume_name = uf.name
-                
+
+            if raw_text and not raw_text.startswith("[Error"):
+
+                # 🔥 CLEAN TEXT
+                text = clean_text(raw_text)
+
+                st.session_state.resume_text = text
+                st.session_state.resume_name = uf.name
+
+                # 📊 METRICS
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Characters", f"{len(text):,}")
@@ -1057,72 +1225,193 @@ def page_resume():
                     st.metric("Words", f"{len(text.split()):,}")
                 with col3:
                     st.metric("Format", uf.name.split('.')[-1].upper())
-                
+
                 st.success(f"✅ Successfully parsed **{uf.name}**")
-                
-                with st.expander("📄 Preview", expanded=False):
+
+                # 📄 RAW PREVIEW
+                with st.expander("📄 Raw Preview", expanded=False):
                     st.markdown(f"""
                     <div class="resume-preview">
                         {text[:1500]}
                     </div>
                     """, unsafe_allow_html=True)
-                
-                st.markdown("#### 💾 Save Resume")
-                name_inp = st.text_input("Resume name", value=uf.name, key="save_name_upload")
-                
-                if st.button("💾 Save to Database", type="primary", use_container_width=True):
-                    rid = DB.save_resume(name_inp, text, {"source":"upload","filename":uf.name})
-                    if rid:
-                        st.session_state.resume_id = rid
-                        st.success(f"✅ Saved! ID: `{rid}`")
-                        st.balloons()
+
+                # 🔥 LLM STRUCTURING BUTTON
+                if st.button("🧠 Generate Structured Resume", use_container_width=True):
+                    with st.spinner("🧠 AI is structuring your resume..."):
+                        try:
+                            structured = parse_resume_with_llm(text)
+
+                            # 🔥 FORCE DICT FORMAT
+                            if not isinstance(structured, dict):
+                                structured = {"raw_output": str(structured)}
+
+                        except Exception as e:
+                            structured = {"error": str(e)}
+
+                    st.session_state.resume_structured = structured
+
+                    if "error" not in structured:
+                        st.success("✅ Resume structured successfully!")
                     else:
-                        st.warning("⚠️ MongoDB not connected — loaded in session only.")
-            else:
-                st.error(f"❌ {text}")
+                        st.warning(f"⚠️ Issue: {structured.get('error')}")
+
+
+                # 🧠 SHOW STRUCTURED OUTPUT
+                if "resume_structured" in st.session_state:
+                    st.markdown("### 🧠 Structured Resume")
+                    st.json(st.session_state.resume_structured)
+
+
+                # ✅ ONLY SHOW SAVE AFTER SUCCESSFUL STRUCTURING
+                if (
+                    "resume_structured" in st.session_state 
+                    and isinstance(st.session_state.resume_structured, dict)
+                    and len(st.session_state.resume_structured) > 0
+                ):
+
+                    st.markdown("#### 💾 Save Resume")
+
+                    name_inp = st.text_input(
+                        "Resume name", 
+                        value=uf.name, 
+                        key="save_name_upload"
+                    )
+
+                    if st.button("💾 Save to Database", type="primary", use_container_width=True):
+
+                        structured_data = st.session_state.get("resume_structured", {})
+
+                        rid = DB.upsert_resume(
+                            name=name_inp,
+                            text=text,
+                            structured=structured_data,
+                            meta={
+                                "source": "upload",
+                                "filename": uf.name
+                            }
+                        )
+
+                        if rid:
+                            st.session_state.resume_id = rid
+                            st.success(f"✅ Saved successfully! ID: `{rid}`")
+
+                            st.toast("🧠 Structured resume saved!", icon="✅")
+                            st.balloons()
+                        else:
+                            st.warning("⚠️ MongoDB not connected — loaded in session only.")
+
+        # 🔥 FIX: Clear state when file removed
+        if not uf:
+            st.session_state.pop("resume_text", None)
+            st.session_state.pop("resume_name", None)
+            st.session_state.pop("resume_structured", None)
 
     with tab2:
         st.markdown("#### 📋 Paste Resume Text")
         
         pasted = st.text_area(
             "Resume content", 
-            height=350, 
+            height=350,
+            
             placeholder="Paste your complete resume...",
             label_visibility="collapsed"
         )
         
         name_p = st.text_input("Resume name", value="My Resume", key="resume_name_paste")
-        
+
+        # 🔥 RESET STRUCTURED IF TEXT CHANGES
+        if "last_pasted_text" not in st.session_state:
+            st.session_state.last_pasted_text = ""
+
+        if pasted != st.session_state.last_pasted_text:
+            st.session_state.pop("resume_structured_paste", None)
+            st.session_state.last_pasted_text = pasted
+
+        # ✅ ONLY CONTINUE IF TEXT EXISTS
         if pasted.strip():
+
+            text = clean_text(pasted)
+
+            # 📊 METRICS (same as upload)
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("✅ Load Resume", use_container_width=True):
-                    st.session_state.resume_text = pasted
-                    st.session_state.resume_name = name_p
-                    st.success("✅ Loaded!")
-            
+                st.metric("Characters", f"{len(text):,}")
             with col2:
-                if st.button("💾 Save & Load", type="primary", use_container_width=True):
-                    st.session_state.resume_text = pasted
-                    st.session_state.resume_name = name_p
-                    rid = DB.save_resume(name_p, pasted, {"source":"paste"})
+                st.metric("Words", f"{len(text.split()):,}")
+
+            # 📄 PREVIEW
+            with st.expander("📄 Preview", expanded=False):
+                st.markdown(f"""
+                <div class="resume-preview">
+                    {text[:1200]}
+                </div>
+                """, unsafe_allow_html=True)
+
+            # 🔥 AUTO SHOW STRUCTURE BUTTON
+            if name_p.strip():
+                if st.button("🧠 Generate Structured Resume", use_container_width=True):
+
+                    with st.spinner("🧠 AI is structuring your resume..."):
+                        try:
+                            structured = parse_resume_with_llm(text)
+                        except Exception as e:
+                            structured = {"error": str(e)}
+
+                    st.session_state.resume_structured_paste = structured
+
+                    if "error" not in structured:
+                        st.success("✅ Resume structured successfully!")
+                    else:
+                        st.warning("⚠️ AI response parsing issue")
+
+            else:
+                st.info("ℹ️ Enter resume name to enable structuring")
+
+            # 🧠 SHOW STRUCTURED OUTPUT
+            if "resume_structured_paste" in st.session_state:
+                st.markdown("### 🧠 Structured Resume")
+                st.json(st.session_state.resume_structured_paste)
+
+            # ✅ SAVE AFTER STRUCTURING
+            if (
+                "resume_structured_paste" in st.session_state
+                and isinstance(st.session_state.resume_structured_paste, dict)
+                and "error" not in st.session_state.resume_structured_paste
+            ):
+
+                if st.button("💾 Save to Database", type="primary", use_container_width=True):
+
+                    rid = DB.upsert_resume(
+                        name=name_p,
+                        text=text,
+                        structured=st.session_state.resume_structured_paste,
+                        meta={"source": "paste"}
+                    )
+
                     if rid:
-                        st.session_state.resume_id = rid
-                        st.success(f"✅ Saved! ID: `{rid}`")
+                        st.success(f"✅ Saved successfully! ID: `{rid}`")
+                        st.toast("🧠 Structured resume saved!", icon="✅")
+                        # 🔥 CLEAR INPUT FIELD
+                        
                         st.balloons()
+
+                        # 🔥 RESET EVERYTHING (IMPORTANT)
+                        st.session_state.pop("resume_structured_paste", None)
+                        st.session_state.pop("last_pasted_text", None)
+
+                        # optional (if you store globally)
+                        st.session_state.resume_text = ""
+                        st.session_state.resume_name = ""
+                        st.session_state.resume_id = None
+
+                        # 🔥 FORCE UI RESET
+                        st.rerun()
+
+                    else:
+                        st.warning("⚠️ MongoDB not connected — loaded in session only.")
         else:
             st.info("💡 Paste your resume text above")
-
-        st.divider()
-        st.markdown("#### 📋 Upload Template")
-        
-        tf = st.file_uploader("Upload template", type=["pdf","docx","txt"], key="template_upload")
-        if tf:
-            with st.spinner("Loading template..."):
-                template_text = prf(tf)
-                st.session_state.template_text = template_text
-                st.success(f"✅ Template loaded: {tf.name}")
-
     with tab3:
         if not ENABLE_VISION:
             st.info("🔮 Vision AI is disabled. Enable in settings.")
@@ -1562,21 +1851,9 @@ def page_email():
         st.markdown("#### Check Job Responses")
         st.info("Email inbox scanning feature coming soon!")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PAGE 6 — TELEGRAM BOT
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def page_telegram():
-    st.markdown('<p class="section-header">📱 Telegram Bot</p>', unsafe_allow_html=True)
-
-    is_configured = bool(TELEGRAM_BOT_TOKEN)
-    st.markdown(f'<div class="ai-card"><strong>🤖 Bot Status:</strong> {render_status_indicator("Configured" if is_configured else "Not configured", is_configured)}</div>', unsafe_allow_html=True)
-
-    if not is_configured:
-        st.info("Configure Telegram Bot token in settings to use this feature")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PAGE 7 — AI AGENT CHAT
+# PAGE 6 — AI AGENT CHAT
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def page_agent():
@@ -1606,7 +1883,7 @@ def page_agent():
             st.session_state.chat_history.append({"role":"assistant","content":response})
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PAGE 8 — SETTINGS
+# PAGE 7 — SETTINGS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def page_settings():
@@ -1637,7 +1914,6 @@ with st.sidebar:
         ("jobs", "💼", "Job Extraction"),
         ("ats", "🎯", "ATS Optimizer"),
         ("email", "📧", "Email"),
-        ("telegram", "📱", "Telegram"),
         ("agent", "🤖", "AI Chat"),
         ("settings", "⚙️", "Settings"),
     ]
@@ -1658,7 +1934,6 @@ PAGE_MAP = {
     "jobs": page_jobs,
     "ats": page_ats,
     "email": page_email,
-    "telegram": page_telegram,
     "agent": page_agent,
     "settings": page_settings,
 }
