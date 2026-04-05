@@ -1,8 +1,4 @@
-"""
-resume.py — ResumeAI Pro · Resume Processing Module
-Parsing, ATS scoring, optimization, generation, and cover letter creation.
-Fully powered by LangChain Agents + Groq LLM.
-"""
+
 
 import re
 import json
@@ -93,6 +89,87 @@ def parse_resume_file(uploaded_file) -> str:
     elif ext == "txt":
         return data.decode("utf-8", errors="ignore")
     return "[Unsupported file format. Use PDF, DOCX, or TXT]"
+
+
+#Parsing resume through llm
+def build_resume_parser_prompt(text):
+    return f"""
+You are an advanced ATS resume parser.
+
+Extract structured information from the resume below.
+
+Return ONLY valid JSON. No explanation, no markdown.
+
+Format:
+{{
+  "name": "",
+  "email": "",
+  "phone": "",
+  "linkedin_url": "",
+  "github_url": "",
+  "address": "",
+  "profile_summary": "",
+  "skills": {{
+    "technical_skills": [],
+    "core_competencies": [],
+    "soft_skills": []
+  }},
+  "experience": "",
+  "projects": "",
+  "education": "",
+  "certifications": "",
+  "other": ""
+}}
+
+Rules:
+- Map different headings to standard fields:
+  - "Skills", "Technical Skills", "Expertise" → skills
+  - "Work Experience", "Professional Experience" → experience
+  - "Profile", "Summary" → profile_summary
+- Extract exact content, do not rewrite
+- Skills MUST be arrays (lists)
+- Do NOT hallucinate missing data
+- If not found, return empty string "" or empty list []
+- Keep original wording and formatting
+
+Resume:
+{text}
+"""
+
+
+def parse_resume_with_llm(text):
+    prompt = build_resume_parser_prompt(text)
+    client = Groq(api_key=GROQ_KEY)
+    response = client.chat.completions.create(
+        model=MAIN_MODEL,  # or your model
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
+    )
+
+    content = response.choices[0].message.content
+
+    try:
+        return json.loads(content)
+    except:
+        return {"error": "Invalid JSON", "raw": content}
+    
+# 🔹 Clean text
+def clean_text(text):
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\x00-\x7F]+', ' ', text)
+    return text.strip()
+
+def safe_json_load(content):
+    try:
+        return json.loads(content)
+    except:
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+    return {"error": "Parsing failed", "raw": content}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
