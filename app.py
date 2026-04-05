@@ -45,6 +45,15 @@ html, body, [data-testid="stAppViewContainer"] {
     font-family: 'Inter', sans-serif !important;
     color: var(--text);
 }
+/* Hide entire header */
+        [data-testid="stHeader"] {
+            display: none;
+        }
+
+/* Optional: remove top padding gap */
+.block-container {
+    padding-top: 1rem;
+}
 
 /* ===== CONTAINER ===== */
 .main .block-container {
