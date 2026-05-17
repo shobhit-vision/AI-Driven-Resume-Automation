@@ -1851,7 +1851,6 @@ def page_email():
         st.markdown("#### Check Job Responses")
         st.info("Email inbox scanning feature coming soon!")
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGE 6 — AI AGENT CHAT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1938,4 +1937,7 @@ PAGE_MAP = {
     "settings": page_settings,
 }
 
+
 PAGE_MAP.get(st.session_state.page, page_dashboard)()
+
+

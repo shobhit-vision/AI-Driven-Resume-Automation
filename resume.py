@@ -1,8 +1,4 @@
-"""
-resume.py — ResumeAI Pro · Resume Processing Module
-Parsing, ATS scoring, optimization, generation, and cover letter creation.
-Fully powered by LangChain Agents + Groq LLM.
-"""
+
 
 import re
 import json
