@@ -1,0 +1,70 @@
+📧 EMAIL SMTP SETUP GUIDE (GMAIL)
+
+Follow these steps to enable email sending using SMTP:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔐 STEP 1: Enable 2-Step Verification
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Go to:
+https://myaccount.google.com/security
+
+2. Enable:
+👉 2-Step Verification
+
+(Required for App Password)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔑 STEP 2: Generate App Password
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Go to:
+https://myaccount.google.com/apppasswords
+
+2. Select:
+App → Mail  
+Device → Other (Custom name)
+
+3. Enter name:
+ResumeAI App
+
+4. Click "Generate"
+
+5. You will get 16-character password
+
+Example:
+abcd efgh ijkl mnop
+
+👉 Remove spaces when using it:
+abcdefghijklmnop
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📨 STEP 3: SMTP Configuration
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use these settings:
+
+SMTP_HOST = smtp.gmail.com  
+SMTP_PORT = 587  
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ FINAL VALUES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EMAIL_ADDRESS = your_email@gmail.com  
+EMAIL_PASSWORD = app_password (NOT your real Gmail password)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ IMPORTANT NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• NEVER use your real Gmail password  
+• Always use App Password  
+• Keep credentials private  
+• Works only if 2FA is enabled  
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 OPTIONAL (TEST)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You can test by sending a mail from your app after setup.
